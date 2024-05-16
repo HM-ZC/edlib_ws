@@ -1,0 +1,13 @@
+<launch>
+  <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen" >
+    <param name="video_device" value="/dev/video2" />
+    <param name="image_width" value="640" />
+    <param name="image_height" value="480" />
+    <param name="pixel_format" value="yuyv" />
+    <param name="camera_frame_id" value="usb_cam" />
+    <param name="io_method" value="mmap"/>
+  </node>
+  <!-- 启动图像处理节点 -->
+  <node name="image_processor1" pkg="edlib" type="video_test2" output="screen"/>
+  <node name="image_processor2" pkg="edlib" type="video_test3" output="screen"/>
+</launch>
