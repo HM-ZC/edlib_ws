@@ -7,7 +7,19 @@
     <param name="camera_frame_id" value="usb_cam" />
     <param name="io_method" value="mmap"/>
   </node>
+    <!-- 启动第二个摄像头，用于颜色识别 -->
+  <!--node name="usb_cam2" pkg="usb_cam" type="usb_cam_node" output="screen">
+    <param name="video_device" value="/dev/video1" />
+    <param name="image_width" value="640" />
+    <param name="image_height" value="480" />
+    <param name="pixel_format" value="yuyv" />
+    <param name="camera_frame_id" value="usb_cam2" />
+    <param name="io_method" value="mmap"/>
+  </node-->
   <!-- 启动图像处理节点 -->
   <node name="image_processor1" pkg="edlib" type="video_test2" output="screen"/>
+    <!--remap from="/usb_cam/image_raw" to="/usb_cam1/image_raw" /-->
   <node name="image_processor2" pkg="edlib" type="video_test3" output="screen"/>
+    <!--remap from="/usb_cam/image_raw" to="/usb_cam2/image_raw" /-->
 </launch>
+

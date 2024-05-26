@@ -14,7 +14,8 @@
 #include <image_transport/image_transport.h>
 #include <opencv2/ximgproc/edge_drawing.hpp>
 #include <camera_info_manager/camera_info_manager.h>
-
+#include <std_msgs/Bool.h>
+#include <deque>
 using namespace cv;
 using namespace std;
 using namespace cv::ximgproc;
@@ -52,11 +53,11 @@ struct mask
 
 Mat undistort(Mat frame)
 {
-    cv::Mat k = (cv::Mat_<double>(3, 3) << 478.3854, 0.3169, 331.9190,
-                                          0.0, 478.5842, 226.7371,
+    cv::Mat k = (cv::Mat_<double>(3, 3) << 469.8769, 0, 334.8598,
+                                          0.0, 469.8360, 240.2752,
                                           0.0, 0.0, 1.0);
 
-    cv::Mat d = (cv::Mat_<double>(1, 5) << -0.4085, 0.1536, 6.157666674460974e-04, -0.0017, 0.0);
+    cv::Mat d = (cv::Mat_<double>(1, 5) << -0.0555, 0.0907, 0.0, 0.0, 0.0);
 
 	int h = frame.rows;
     int w = frame.cols;
@@ -112,8 +113,8 @@ mask pre(Mat img)
     mask m;
     Mat hsv,hsvout;
     cv::cvtColor(temp,hsv,cv::COLOR_BGR2HSV);
-    cv::Scalar lowerBound(138, 89, 59);  
-    cv::Scalar upperBound(163, 181, 196); 
+    cv::Scalar lowerBound(130, 42, 47);  
+    cv::Scalar upperBound(170, 171, 242); 
     //////////////////////
     
     // purple low 139 89 59 high 163 181 196
@@ -213,14 +214,28 @@ mask reconize(Mat img,Ptr<EdgeDrawing> ed)
     vector<Vec6d> ellipses,colors;
     vector<Vec4f> lines;
     Mat colorImg = img;
-    // cv::resize(img,colorImg,Size(4*can , 3*can));
+    /* 预处理步骤 - 高斯模糊
+    cv::GaussianBlur(colorImg, colorImg, cv::Size(5, 5), 0);
 
+    // 预处理步骤 - 转换为灰度图并进行直方图均衡化
+    cv::Mat grayImg;
+    cv::cvtColor(colorImg, grayImg, cv::COLOR_BGR2GRAY);
+    cv::equalizeHist(grayImg, grayImg);
+    // 应用CLAHE
+    Ptr<cv::CLAHE> clahe = cv::createCLAHE();
+    clahe->setClipLimit(2.0);
+    clahe->apply(grayImg, grayImg);
+    // 自适应阈值
+    cv::Mat threshImg;
+    cv::adaptiveThreshold(grayImg, threshImg, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, 11, 2);    clahe->setClipLimit(2.0);
+    */
         EDColor testEDColor = EDColor(colorImg, gradThresh,anchor_thresh,sigmai,validateSegments);
         EDCircles colorCircle = EDCircles(testEDColor);
         vector<mCircle> found_ccircles = colorCircle.getCircles();
         int maxd=0;
         int maxr=0;
         float k,d,x;
+        double maxDiameter = 0;
         // float d[found_ccircles.size()+1]={0};//深度
         for (int i = 0; i < found_ccircles.size(); i++)
         {
@@ -228,25 +243,28 @@ mask reconize(Mat img,Ptr<EdgeDrawing> ed)
             Size axes((int)found_ccircles[i].r, (int)found_ccircles[i].r);
             double angle(0.0);
             Scalar color = Scalar(0, 255, 0);
+            double diameter = 2 * found_ccircles[i].r;
             if(found_ccircles[i].r>17)
             {
                 ellipse(colorImg, center, axes, angle, 0, 360, color, 1, LINE_AA);
-                cout<<"半径："<<found_ccircles[i].r<<endl;
                 // d[i]=23956/found_ccircles[i].r;//距离
             }
             if(found_ccircles[i].r>maxd)
             {
                 maxd=found_ccircles[i].r;
                 maxr=found_ccircles[i].center.x;
+                maxDiameter = diameter; // 更新最大直径
             }
                 
         }
-        k=190.0/maxr;
-        d=1.0*k*478.4848;
-        x=1.0*k*(maxr-331.9190);
+        // 使用直径代替深度
+        camera1.pz = float_to_int(maxDiameter);
+        //k=190.0/maxr;
+        //d=1.0*k*469.8769;
+        x=maxr-334.8598;
         camera1.px=float_to_int(x);
-        camera1.pz=float_to_int(d);
-        
+        //camera1.pz=float_to_int(d);
+        //camera1.px = float_to_int(1.0*(maxr-331.9190));
 
         // for (int i = 0; i < found_cellipses.size(); i++)
         // {   
@@ -274,17 +292,63 @@ public:
     image_transport::ImageTransport it_;
     image_transport::Subscriber image_sub_;
     ros::Publisher pub_;
+    ros::Subscriber save_image_sub_;
+    ros::Subscriber color_sub_;
     Ptr<EdgeDrawing> ed;
+    bool save_next_image;
+    bool color_detected; // 存储颜色检测结果
+    std::deque<cv::Point2f> points; // 用于存储坐标的队列
+    const int window_size = 10; // 滤波器的窗口大小
+    // 多帧图像融合队列
+    std::deque<cv::Mat> frames;
+    const int frame_count = 3; // 多帧融合的帧数
     ImageProcessor()
-        : it_(nh_)
+        : it_(nh_), save_next_image(false)
     {
         // 订阅图像话题
         image_sub_ = it_.subscribe("/usb_cam/image_raw", 1, &ImageProcessor::imageCallback, this);
 
         // 发布球位置
         pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/camera1/ball_position", 100);
+        save_image_sub_ = nh_.subscribe("/trigger_save_image", 10, &ImageProcessor::triggerSaveImageCallback, this);
+
+        // 订阅颜色检测结果消息
+        color_sub_ = nh_.subscribe("/color_detection/purple_detected", 10, &ImageProcessor::colorDetectionCallback, this);
+    }
+    void triggerSaveImageCallback(const std_msgs::Bool::ConstPtr& msg)
+    {
+        save_next_image = msg->data;  // 根据接收到的消息设置是否保存图像
+    }
+    void colorDetectionCallback(const std_msgs::Bool::ConstPtr& msg)
+    {
+        color_detected = msg->data;  // 更新颜色检测结果
     }
 
+    std::string generateFilename()
+    {
+    static int file_number = 0;  // 静态变量，每次调用函数都会递增
+    std::stringstream ss;
+    ss << "image_" << file_number++ << ".jpg"; // 格式例如: "image_1.jpg"
+    return ss.str();
+    }
+    cv::Point2f movingAverageFilter(const cv::Point2f &new_point)
+    {
+        // 如果新点是无效的（为0），则不添加到队列
+        if (new_point.y == 0) return cv::Point2f(0, 0);
+
+        points.push_back(new_point);
+        if (points.size() > window_size)
+        {
+            points.pop_front();
+        }
+
+        cv::Point2f sum(0, 0);
+        for (const auto &point : points)
+        {
+            sum += point;
+        }
+        return sum / static_cast<float>(points.size());
+    }
     void imageCallback(const sensor_msgs::ImageConstPtr& msg)
     {
         cv_bridge::CvImagePtr cv_ptr;
@@ -301,16 +365,57 @@ public:
         // 图像处理逻辑
         cv::Mat src = cv_ptr->image;
         src = undistort(src);
+        /* 保存帧到队列
+        frames.push_back(src);
+        if (frames.size() > frame_count) {
+            frames.pop_front();
+        }
+
+        // 多帧图像融合
+        cv::Mat fused_frame = cv::Mat::zeros(src.size(), src.type());
+        for (const auto& frame : frames) {
+            fused_frame += frame / static_cast<double>(frames.size());
+        }
+        */
+        // 如果需要保存图像
+        if (save_next_image)
+        {
+            std::string filename = "/root/edlib_ws/src/edlib/src/" + generateFilename();
+            cv::imwrite(filename, src);  // 保存处理后的图像
+            save_next_image = false; // 重置标志
+        }
+        /* 图像预处理
+        cv::GaussianBlur(fused_frame, fused_frame, cv::Size(5, 5), 0);
+        cv::Mat gray_image;
+        cv::cvtColor(fused_frame, gray_image, cv::COLOR_BGR2GRAY);
+        cv::equalizeHist(gray_image, gray_image);
+        // 应用CLAHE
+        Ptr<cv::CLAHE> clahe = cv::createCLAHE();
+        clahe->setClipLimit(2.0);
+        clahe->apply(gray_image, gray_image);
+        cv::Mat thresh_image;
+        cv::adaptiveThreshold(gray_image, thresh_image, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, 11, 2);
+        */
         cv::Mat src1 = masker(src);
         cv::imshow("vedio1", src);
         cv::imshow("vedio2", src1);
         cv::waitKey(1);
         mask camera = reconize(src1, ed);
+        // 获取未平滑的坐标点
+        cv::Point2f raw_point(camera.px, camera.pz);
+
+        // 应用移动平均滤波器
+        cv::Point2f smoothed_point = movingAverageFilter(raw_point);
+
+        // 如果平滑后的点为无效点（即之前所有点都是0），则跳过发布
+        if (smoothed_point.y == 0) return;
+
+        ROS_INFO("Ball Position - x: %f, y: %f", smoothed_point.x, smoothed_point.y);
 
         geometry_msgs::PoseStamped pose_msg;
         pose_msg.pose.position.x = camera.px;
         pose_msg.pose.position.y = camera.pz;
-        pose_msg.pose.position.z = 0;
+        pose_msg.pose.position.z = color_detected ? 1.0 : 0.0; // 根据颜色检测结果更新z值;
         pose_msg.pose.orientation.x = 0.0;
         pose_msg.pose.orientation.y = 0.0;
         pose_msg.pose.orientation.z = 0.0;
@@ -323,6 +428,7 @@ public:
 
 int main(int argc, char **argv)
 {
+    putenv("QT_X11_NO_MITSHM=1");
     ros::init(argc, argv, "camera1");
     ImageProcessor ip;
     ros::spin();
