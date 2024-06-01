@@ -299,8 +299,7 @@ mask reconize(Mat img, Ptr<EdgeDrawing> ed) {
     counter++;
     return camera1;
 }
-class ImageProcessor
-{
+class ImageProcessor {
 public:
     ros::NodeHandle nh_;
     image_transport::ImageTransport it_;
@@ -310,120 +309,117 @@ public:
     ros::Subscriber color_sub_;
     Ptr<EdgeDrawing> ed;
     bool save_next_image;
-    bool color_detected; // 存储颜色检测结果
-    std::deque<cv::Point2f> points; // 用于存储坐标的队列
-    const int window_size = 10; // 滤波器的窗口大小
-    cv::Mat left_frame;
-    cv::Mat right_frame;
-    cv::Mat Q;
+    bool color_detected;
+    std::deque<cv::Point2f> points;
+    const int window_size = 10;
+    cv::Mat depth_frame;
+    cv::Mat K;  // 相机内参矩阵
+
     ImageProcessor()
-        : it_(nh_), save_next_image(false)
-    {
-        left_image_sub_ = it_.subscribe("/stereo/left/image_raw", 1, &ImageProcessor::leftImageCallback, this);
-        right_image_sub_ = it_.subscribe("/stereo/right/image_raw", 1, &ImageProcessor::rightImageCallback, this);
+        : it_(nh_), save_next_image(false) {
+        image_sub_ = it_.subscribe("/camera/depth/image_raw", 1, &ImageProcessor::imageCallback, this);
         pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/stereo/ball_position", 100);
-
-        // 初始化Q矩阵
-        Q = (cv::Mat_<double>(4, 4) << 1, 0, 0, -334.8598,  // cx
-                                        0, 1, 0, -240.2752,  // cy
-                                        0, 0, 0, 469.8769,   // fx
-                                        0, 0, 1.0 / 0.05, 0); // 1.0 / baseline
         save_image_sub_ = nh_.subscribe("/trigger_save_image", 10, &ImageProcessor::triggerSaveImageCallback, this);
-
-        // 订阅颜色检测结果消息
         color_sub_ = nh_.subscribe("/color_detection/purple_detected", 10, &ImageProcessor::colorDetectionCallback, this);
-    }
-    void leftImageCallback(const sensor_msgs::ImageConstPtr& msg) {
-        processImage(msg, true);
-    }
-    void rightImageCallback(const sensor_msgs::ImageConstPtr& msg) {
-        processImage(msg, false);
-    }
-    void triggerSaveImageCallback(const std_msgs::Bool::ConstPtr& msg)
-    {
-        save_next_image = msg->data;  // 根据接收到的消息设置是否保存图像
-    }
-    void colorDetectionCallback(const std_msgs::Bool::ConstPtr& msg)
-    {
-        color_detected = msg->data;  // 更新颜色检测结果
+
+        // 初始化相机内参矩阵
+        K = (cv::Mat_<double>(3, 3) << 469.8769, 0, 334.8598,
+                                       0, 469.8360, 240.2752,
+                                       0, 0, 1.0);
     }
 
-    std::string generateFilename()
-    {
-    static int file_number = 0;  // 静态变量，每次调用函数都会递增
-    std::stringstream ss;
-    ss << "image_" << file_number++ << ".jpg"; // 格式例如: "image_1.jpg"
-    return ss.str();
+    void triggerSaveImageCallback(const std_msgs::Bool::ConstPtr& msg) {
+        save_next_image = msg->data;
     }
-    cv::Point2f movingAverageFilter(const cv::Point2f &new_point)
-    {
-        // 如果新点是无效的（为0），则不添加到队列
+
+    void colorDetectionCallback(const std_msgs::Bool::ConstPtr& msg) {
+        color_detected = msg->data;
+    }
+
+    std::string generateFilename() {
+        static int file_number = 0;
+        std::stringstream ss;
+        ss << "image_" << file_number++ << ".jpg";
+        return ss.str();
+    }
+
+    cv::Point2f movingAverageFilter(const cv::Point2f &new_point) {
         if (new_point.y == 0) return cv::Point2f(0, 0);
 
         points.push_back(new_point);
-        if (points.size() > window_size)
-        {
+        if (points.size() > window_size) {
             points.pop_front();
         }
 
         cv::Point2f sum(0, 0);
-        for (const auto &point : points)
-        {
+        for (const auto &point : points) {
             sum += point;
         }
         return sum / static_cast<float>(points.size());
     }
-    void imageCallback(const sensor_msgs::ImageConstPtr& msg)
-    {
-        cv_bridge::CvImagePtr cv_ptr;
-        try
-        {
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+    void checkImageType(const cv::Mat& image) {
+        int type = image.type();
+        int channels = image.channels();
+
+        ROS_INFO("Image type: %d, Number of channels: %d", type, channels);
+
+        switch (type) {
+            case CV_32FC1:
+                ROS_INFO("The image is a single-channel 32-bit float image (CV_32FC1).");
+                break;
+            case CV_32FC3:
+                ROS_INFO("The image is a three-channel 32-bit float image (CV_32FC3).");
+                break;
+            default:
+                ROS_INFO("The image has a different type.");
+                break;
         }
-        catch (cv_bridge::Exception& e)
-        {
+    }
+    void imageCallback(const sensor_msgs::ImageConstPtr& msg) {
+        cv_bridge::CvImagePtr cv_ptr;
+        try {
+            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_32FC1);
+        } catch (cv_bridge::Exception& e) {
             ROS_ERROR("cv_bridge exception: %s", e.what());
             return;
         }
 
-        // 图像处理逻辑
         cv::Mat src = cv_ptr->image;
-        src = undistort(src);
-        cv::Mat srcc=undistortAndGray(cv_ptr->image)
-        // 如果需要保存图像
-        if (save_next_image)
-        {
+        checkImageType(src);
+        if (save_next_image) {
             std::string filename = "/root/edlib_ws/src/edlib/src/" + generateFilename();
-            cv::imwrite(filename, src);  // 保存处理后的图像
-            save_next_image = false; // 重置标志
+            cv::imwrite(filename, src);
+            save_next_image = false;
         }
 
-    if (is_left) {
-        left_frame = srcc;
-        cv::Mat src1 = masker(src);
-        cv::imshow("vedio1", src);
-        cv::imshow("vedio2", src1);
-        cv::waitKey(1);
-    } else {
-        right_frame = srcc;
-    }
-
-    if (!left_frame.empty() && !right_frame.empty()) {
-        cv::Mat disparity, depth;
-        computeDisparity(left_frame, right_frame, disparity);
-        cv::reprojectImageTo3D(disparity, depth, Q);
-
-        mask camera = reconize(src1, ed);
+        depth_frame = src;
+        mask camera = reconize(src, ed);
         cv::Point2f raw_point(camera.px, camera.py);
         cv::Point2f smoothed_point = movingAverageFilter(raw_point);
         if (smoothed_point.x == 0 && smoothed_point.y == 0) return;
 
-        // 将图像坐标转换为真实坐标
-        cv::Vec3f point_3d = depth.at<cv::Vec3f>(smoothed_point.y, smoothed_point.x);
-        float real_x = point_3d[0];
-        float real_y = point_3f[1];
-        float real_z = point_3f[2];
+        float real_x, real_y, real_z;
+        if (src.type() == CV_32FC1) {
+            // 单通道深度图像
+            float depth_value = depth_frame.at<float>(smoothed_point.y, smoothed_point.x);
 
+            float u = smoothed_point.x;
+            float v = smoothed_point.y;
+            float z = depth_value;
+
+            real_x = (u - K.at<double>(0, 2)) * z / K.at<double>(0, 0);
+            real_y = (v - K.at<double>(1, 2)) * z / K.at<double>(1, 1);
+            real_z = z;
+        } else if (src.type() == CV_32FC3) {
+            // 三通道点云图像
+            cv::Vec3f point3D = depth_frame.at<cv::Vec3f>(smoothed_point.y, smoothed_point.x);
+            real_x = point3D[0];
+            real_y = point3D[1];
+            real_z = point3D[2];
+        } else {
+            ROS_ERROR("Unsupported image type!");
+            return;
+        }
         ROS_INFO("Ball Position - x: %f, y: %f, z: %f", real_x, real_y, real_z);
 
         geometry_msgs::PoseStamped pose_msg;
@@ -440,8 +436,7 @@ public:
     }
 };
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     ros::init(argc, argv, "stereo_image_processor");
     ImageProcessor ip;
     ros::spin();
