@@ -14,12 +14,10 @@ public:
     image_transport::Subscriber image_sub_;
     ros::Publisher color_pub_;  // 添加一个发布器用于颜色检测结果
     image_transport::Publisher mask_pub_;
-    std::deque<cv::Mat> frames; // 用于多帧图像融合
-    const int frame_count = 2;  // 多帧融合的帧数
     ImageProcessor()
         : it_(nh_)
     {
-        image_sub_ = it_.subscribe("/usb_cam/image_raw", 1, &ImageProcessor::imageCallback, this);
+        image_sub_ = it_.subscribe("/camera1/usb_cam1/image_raw", 1, &ImageProcessor::imageCallback, this);
         color_pub_ = nh_.advertise<std_msgs::Bool>("/color_detection/purple_detected", 10); // 颜色检测结果的话题
         mask_pub_ = it_.advertise("/color_detection/mask_image", 1); 
         cv::namedWindow("Mask", cv::WINDOW_NORMAL);
@@ -34,54 +32,36 @@ public:
             ROS_ERROR("cv_bridge exception: %s", e.what());
             return;
         }
-        // 保存帧到队列
-        frames.push_back(cv_ptr->image);
-        if (frames.size() > frame_count) {
-            frames.pop_front();
-        }
 
-        // 多帧图像融合
-        cv::Mat fused_frame = cv::Mat::zeros(cv_ptr->image.size(), cv_ptr->image.type());
-        for (const auto& frame : frames) {
-            fused_frame += frame / static_cast<double>(frames.size());
-        }
-
-        // 图像预处理
-        cv::GaussianBlur(fused_frame, fused_frame, cv::Size(5, 5), 0);
-        cv::Mat gray_image;
-        cv::cvtColor(fused_frame, gray_image, cv::COLOR_BGR2GRAY);
-        cv::equalizeHist(gray_image, gray_image);
-
-        // 应用CLAHE
-        cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
-        clahe->setClipLimit(2.0);
-        clahe->apply(gray_image, gray_image);
-
-        // 自适应阈值
-        cv::Mat thresh_image;
-        cv::adaptiveThreshold(gray_image, thresh_image, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, 11, 2);
         cv::Mat hsv_image;
-        cv::cvtColor(fused_frame, hsv_image, cv::COLOR_BGR2HSV);
+        cv::cvtColor(cv_ptr->image, hsv_image, cv::COLOR_BGR2HSV);
         cv::Scalar lower_purple = cv::Scalar(119, 22, 62);
         cv::Scalar upper_purple = cv::Scalar(170, 171, 242);
         cv::Mat mask;
         cv::inRange(hsv_image, lower_purple, upper_purple, mask);
-        // 将阈值处理结果与颜色检测掩码结合
-        cv::Mat combined_mask;
-        cv::bitwise_and(mask, thresh_image, combined_mask);
+
         std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(combined_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
         double maxArea = 0;
+        std::vector<cv::Point>maxContour;
         for (const auto& contour : contours) {
             double area = cv::contourArea(contour);
             if (area > maxArea) {
                 maxArea = area;
+                maxContour = contour;
             }
         }
-
+        bool ball_near_top_edge = false;
+        const int edge_threshold = 1;
+        for (const auto& point : maxContour){
+            if (point.y < edge_threshold){
+                ball_near_top_edge=true;
+                break;
+            }
+        } 
         std_msgs::Bool detection_msg;
-        detection_msg.data = maxArea >100000;
+        detection_msg.data = (maxArea >25000)&& !ball_near_top_edge;
 
         color_pub_.publish(detection_msg); // 发布颜色检测结果
     // 发布掩码图像
