@@ -16,6 +16,7 @@
 #include <camera_info_manager/camera_info_manager.h>
 #include <std_msgs/Bool.h>
 #include <deque>
+#include <chrono>
 using namespace cv;
 using namespace std;
 using namespace cv::ximgproc;
@@ -275,13 +276,13 @@ mask reconize(Mat img, Ptr<EdgeDrawing> ed)
     if (maxdHough > maxdED)
     {
         camera1.pz = float_to_int(maxDiameterHough);
-        xHough = maxrHough - 320;
+        xHough = maxrHough - 322;
         camera1.px = float_to_int(xHough);
     }
     else
     {
         camera1.pz = float_to_int(maxDiameterED);
-        xED = maxrED - 320;
+        xED = maxrED - 322;
         camera1.px = float_to_int(xED);
     }
 
@@ -298,14 +299,20 @@ image_transport::Subscriber image_sub_cam2_;
 ros::Publisher pub_;
 ros::Subscriber save_image_sub_;
 ros::Subscriber color_sub_;
+ros::Subscriber edge_sub_;
 Ptr<EdgeDrawing> ed;
 bool save_next_image;
 bool color_detected; // 存储颜色检测结果
+bool ball_near_top_edge;
 std::deque<cv::Point2f> points; // 用于存储坐标的队列
 const int window_size = 10; // 滤波器的窗口大小
+std::chrono::time_point<std::chrono::steady_clock>last_publish_time;
+KalmanFilter kalmanFilter;
+cv::Mat state;
+cv::Mat meas;
 
 ImageProcessor()
-: it_(nh_), save_next_image(false)
+: it_(nh_), save_next_image(false),kalmanFilter(4,2,0),state(4,1,CV_32F),meas(2,1,CV_32F)
 {
 // 订阅图像话题
 image_sub_cam1_ = it_.subscribe("/camera1/usb_cam1/image_raw", 1,&ImageProcessor::imageCallbackCam1, this);
@@ -316,7 +323,20 @@ save_image_sub_ = nh_.subscribe("/trigger_save_image", 10, &ImageProcessor::trig
 
 // 订阅颜色检测结果消息
 color_sub_ = nh_.subscribe("/color_detection/purple_detected", 10, &ImageProcessor::colorDetectionCallback, this);
+edge_sub_=nh_.subscribe("/color_detection/ball_near_top_edge", 10, &ImageProcessor::edgeDetectionCallback, this);
+
+kalmanFilter.transitionMatrix=(Mat_<float>(4,4)<<1,0,1,0,
+						    0,1,0,1,
+						    0,0,1,0,
+						    0,0,0,1);
+setIdentity(kalmanFilter.measurementMatrix);
+setIdentity(kalmanFilter.processNoiseCov,Scalar::all(1e-2));
+setIdentity(kalmanFilter.measurementNoiseCov,Scalar::all(1e-1));
+setIdentity(kalmanFilter.errorCovPost,Scalar::all(1));
+randn(kalmanFilter.statePost,Scalar::all(0),Scalar::all(0.1));
+
 }
+
 void triggerSaveImageCallback(const std_msgs::Bool::ConstPtr& msg)
 {
 save_next_image = msg->data; // 根据接收到的消息设置是否保存图像
@@ -325,7 +345,13 @@ void colorDetectionCallback(const std_msgs::Bool::ConstPtr& msg)
 {
 color_detected = msg->data; // 更新颜色检测结果
 }
-
+void edgeDetectionCallback(const std_msgs::Bool::ConstPtr& msg)
+{
+ball_near_top_edge=msg->data;
+if(ball_near_top_edge){
+last_publish_time=std::chrono::steady_clock::now();
+}
+}
 std::string generateFilename()
 {
 static int file_number = 0; // 静态变量，每次调用函数都会递增
@@ -351,7 +377,18 @@ sum += point;
 }
 return sum / static_cast<float>(points.size());
 }
-void imageCallback(const cv::Mat& src0)
+
+void kalmanPredictAndCorrect(float px,float pz)
+{
+state=kalmanFilter.predict();
+
+meas.at<float>(0)=px;
+meas.at<float>(1)=pz;
+kalmanFilter.correct(meas);
+}
+
+
+void imageCallback(const cv::Mat& src0,bool useKalman)
 {
 
 
@@ -372,20 +409,33 @@ cv::imshow("vedio2", src1);
 cv::waitKey(1);
 mask camera = reconize(src1, ed);
 // 获取未平滑的坐标点
-cv::Point2f raw_point(camera.px, camera.pz);
-
-// 应用移动平均滤波器
-cv::Point2f smoothed_point = movingAverageFilter(raw_point);
-
-// 如果平滑后的点为无效点（即之前所有点都是0），则跳过发布
-if (smoothed_point.y == 0) return;
-
-ROS_INFO("Ball Position - x: %f, y: %f", smoothed_point.x, smoothed_point.y);
+if (camera.pz==0)return;
+cv::Point2f avg_point=movingAverageFilter(cv::Point2f(camera.px,camera.pz));
+avg_point=movingAverageFilter(avg_point);
+if(useKalman)
+{
+kalmanPredictAndCorrect(avg_point.x,avg_point.y);
+avg_point=cv::Point2f(state.at<float>(0),state.at<float>(1));
+avg_point=movingAverageFilter(avg_point);
+avg_point=movingAverageFilter(avg_point);
+}
+/*
+if(ball_near_top_edge){
+auto now=std::chrono::steady_clock::now();
+std::chrono::duration<double>elapsed_seconds=now-last_publish_time;
+if(elapsed_seconds.count()>=2.0){
+ball_near_top_edge=false;
+}else{
+return;
+}
+}
+*/
+ROS_INFO("Ball Position - x: %f, y: %f", avg_point.x, avg_point.y);
 
 geometry_msgs::PoseStamped pose_msg;
-pose_msg.pose.position.x = camera.px;
-pose_msg.pose.position.y = camera.pz;
-pose_msg.pose.position.z = color_detected ? 1.0 : 0.0; // 根据颜色检测结果更新z值;
+pose_msg.pose.position.x = avg_point.x;
+pose_msg.pose.position.y = avg_point.y;
+pose_msg.pose.position.z = color_detected ? (ball_near_top_edge ? 2.0:1.0) : 0.0; // 根据颜色检测结果更新z值;
 pose_msg.pose.orientation.x = 0.0;
 pose_msg.pose.orientation.y = 0.0;
 pose_msg.pose.orientation.z = 0.0;
@@ -407,7 +457,7 @@ catch (cv_bridge::Exception& e)
 ROS_ERROR("cv_bridge exception: %s", e.what());
 return;
 }
-imageCallback(cv_ptr->image);
+imageCallback(cv_ptr->image,true);
 }
 void imageCallbackCam2(const sensor_msgs::ImageConstPtr& msg)
 {
@@ -422,7 +472,7 @@ catch (cv_bridge::Exception& e)
 ROS_ERROR("cv_bridge exception: %s", e.what());
 return;
 }
-imageCallback(cv_ptr->image);
+imageCallback(cv_ptr->image,false);
 }
 };
 

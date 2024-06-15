@@ -13,12 +13,14 @@ public:
     image_transport::ImageTransport it_;
     image_transport::Subscriber image_sub_;
     ros::Publisher color_pub_;  // 添加一个发布器用于颜色检测结果
+    ros::Publisher edge_pub_;
     image_transport::Publisher mask_pub_;
     ImageProcessor()
         : it_(nh_)
     {
         image_sub_ = it_.subscribe("/camera1/usb_cam1/image_raw", 1, &ImageProcessor::imageCallback, this);
         color_pub_ = nh_.advertise<std_msgs::Bool>("/color_detection/purple_detected", 10); // 颜色检测结果的话题
+        edge_pub_=nh_.advertise<std_msgs::Bool>("/color_detection/ball_near_top_edge",10);
         mask_pub_ = it_.advertise("/color_detection/mask_image", 1); 
         cv::namedWindow("Mask", cv::WINDOW_NORMAL);
     }
@@ -64,6 +66,10 @@ public:
         detection_msg.data = (maxArea >25000)&& !ball_near_top_edge;
 
         color_pub_.publish(detection_msg); // 发布颜色检测结果
+        
+        std_msgs::Bool edge_msg;
+        edge_msg.data=ball_near_top_edge;
+        edge_pub_.publish(edge_msg);
     // 发布掩码图像
     sensor_msgs::ImagePtr out_msg = cv_bridge::CvImage(std_msgs::Header(), "mono8", mask).toImageMsg();
     mask_pub_.publish(out_msg);
