@@ -10,7 +10,7 @@
 #include "opencv2/videoio.hpp"
 #include "opencv2/ximgproc.hpp"
 #include <cv_bridge/cv_bridge.h>
-#include "geometry_msgs/PoseStamped.h" 
+#include "geometry_msgs/Point.h" 
 #include <image_transport/image_transport.h>
 #include <opencv2/ximgproc/edge_drawing.hpp>
 #include <camera_info_manager/camera_info_manager.h>
@@ -300,6 +300,7 @@ ros::Publisher pub_;
 ros::Subscriber save_image_sub_;
 ros::Subscriber color_sub_;
 ros::Subscriber edge_sub_;
+image_transport::Publisher image_pub_; // 新增图像发布者
 Ptr<EdgeDrawing> ed;
 bool save_next_image;
 bool color_detected; // 存储颜色检测结果
@@ -318,12 +319,13 @@ ImageProcessor()
 image_sub_cam1_ = it_.subscribe("/camera1/usb_cam1/image_raw", 1,&ImageProcessor::imageCallbackCam1, this);
 image_sub_cam2_ = it_.subscribe("/camera2/usb_cam/image_raw", 1, &ImageProcessor::imageCallbackCam2, this);
 // 发布球位置
-pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/camera1/ball_position", 100);
+pub_ = nh_.advertise<geometry_msgs::Point>("/camera1/ball_position", 100);
 save_image_sub_ = nh_.subscribe("/trigger_save_image", 10, &ImageProcessor::triggerSaveImageCallback, this);
 
 // 订阅颜色检测结果消息
 color_sub_ = nh_.subscribe("/color_detection/purple_detected", 10, &ImageProcessor::colorDetectionCallback, this);
 edge_sub_=nh_.subscribe("/color_detection/ball_near_top_edge", 10, &ImageProcessor::edgeDetectionCallback, this);
+image_pub_ = it_.advertise("/camera1/undistorted_image", 1); // 新增的图像发布话题
 
 kalmanFilter.transitionMatrix=(Mat_<float>(4,4)<<1,0,1,0,
 						    0,1,0,1,
@@ -394,11 +396,10 @@ void imageCallback(const cv::Mat& src0,bool useKalman)
 
 // 图像处理逻辑
 cv::Mat src = undistort(src0);
-
 // 如果需要保存图像
 if (save_next_image)
 {
-std::string filename = "/root/edlib_ws/src/edlib/src/" + generateFilename();
+std::string filename = "/home/nuc/" + generateFilename();s
 cv::imwrite(filename, src); // 保存处理后的图像
 save_next_image = false; // 重置标志
 }
@@ -419,30 +420,16 @@ avg_point=cv::Point2f(state.at<float>(0),state.at<float>(1));
 avg_point=movingAverageFilter(avg_point);
 avg_point=movingAverageFilter(avg_point);
 }
-/*
-if(ball_near_top_edge){
-auto now=std::chrono::steady_clock::now();
-std::chrono::duration<double>elapsed_seconds=now-last_publish_time;
-if(elapsed_seconds.count()>=2.0){
-ball_near_top_edge=false;
-}else{
-return;
-}
-}
-*/
+
 ROS_INFO("Ball Position - x: %f, y: %f", avg_point.x, avg_point.y);
 
-geometry_msgs::PoseStamped pose_msg;
-pose_msg.pose.position.x = avg_point.x;
-pose_msg.pose.position.y = avg_point.y;
-pose_msg.pose.position.z = color_detected ? (ball_near_top_edge ? 2.0:1.0) : 0.0; // 根据颜色检测结果更新z值;
-pose_msg.pose.orientation.x = 0.0;
-pose_msg.pose.orientation.y = 0.0;
-pose_msg.pose.orientation.z = 0.0;
-pose_msg.pose.orientation.w = 1.0;
-pose_msg.header.frame_id = "ball_position";
-pose_msg.header.stamp = ros::Time::now();
+geometry_msgs::Point pose_msg;
+pose_msg.x = avg_point.x;
+pose_msg.y = avg_point.y;
+pose_msg.z = color_detected ? 1.0 : 0.0; // 根据颜色检测结果更新z值;
+
 pub_.publish(pose_msg);
+
 }
 void imageCallbackCam1(const sensor_msgs::ImageConstPtr& msg)
 {
@@ -472,7 +459,12 @@ catch (cv_bridge::Exception& e)
 ROS_ERROR("cv_bridge exception: %s", e.what());
 return;
 }
-imageCallback(cv_ptr->image,false);
+        cv::Mat src = undistort(cv_ptr->image);
+        cv::imshow("vedio1", src);
+        cv::waitKey(1);
+    sensor_msgs::ImagePtr output_msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", src).toImageMsg();
+    image_pub_.publish(output_msg);
+    
 }
 };
 

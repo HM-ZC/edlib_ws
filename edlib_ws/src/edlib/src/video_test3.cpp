@@ -63,7 +63,7 @@ public:
             }
         } 
         std_msgs::Bool detection_msg;
-        detection_msg.data = (maxArea >25000)&& !ball_near_top_edge;
+        detection_msg.data = (maxArea >22500)&& !ball_near_top_edge;
 
         color_pub_.publish(detection_msg); // 发布颜色检测结果
         

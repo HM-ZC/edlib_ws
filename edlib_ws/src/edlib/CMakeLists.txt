@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   camera_info_manager
   cv_bridge
   sensor_msgs
+
 )
 find_package(OpenCV REQUIRED)
 add_compile_options(-std=c++11)
@@ -44,9 +45,9 @@ LINK_DIRECTORIES(
 /opt/MVS/lib/64/
 )
 
-add_executable(video_test2 src/video_test2.cpp)
+add_executable(video_test22 src/video_test22.cpp)
 
-add_dependencies(video_test2 ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(video_test22 ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(EDLib ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_executable(video_test3 src/video_test3.cpp)
 target_link_libraries(video_test3
@@ -58,7 +59,7 @@ target_link_libraries(EDLib
   ${catkin_LIBRARIES}
 )
 
-target_link_libraries(video_test2
+target_link_libraries(video_test22
  EDLib
  ${catkin_LIBRARIES}
  ${OpenCV_LIBRARIES}
